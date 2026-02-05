@@ -138,18 +138,38 @@ else:
     st.sidebar.caption(f"📅 매월 **{monthly_amt:,}원** 투자")
 
 # 3. 기간 설정
-start_date = st.sidebar.date_input("시작일", datetime(2015, 1, 1))
+start_date = st.sidebar.date_input("시작일", datetime(2018, 1, 1))
 end_date = st.sidebar.date_input("종료일", datetime.now())
 
-# 4. 종목 선택
+# 4. 종목 선택 (자유 입력 4칸)
 st.sidebar.divider()
-default_tickers = ["069500", "005930"]
-tickers = st.sidebar.multiselect(
-    "비교할 종목 코드 (ETF 포함)", 
-    options=["069500", "005930", "379800", "360750"], 
-    default=default_tickers
-)
-st.sidebar.caption("※ 069500: KODEX 200, 005930: 삼성전자")
+st.sidebar.subheader("📌 종목 코드 입력 (최대 4개)")
+st.sidebar.caption("KOSPI/KOSDAQ 종목코드 6자리를 입력하세요. (비워두면 무시됩니다)")
+
+tickers = []
+# 2열 2행으로 배치하여 공간 효율화 (선택 사항, 그냥 1열로 해도 됨)
+c1, c2 = st.sidebar.columns(2)
+
+# 입력 필드 1 (기본값: KODEX 200)
+with c1:
+    t1 = st.text_input("종목 1", value="069500")
+# 입력 필드 2 (기본값: TIGER 미국S&P500)
+with c2:
+    t2 = st.text_input("종목 2", value="360750")
+# 입력 필드 3 (비워둠)
+with c1:
+    t3 = st.text_input("종목 3", value="")
+# 입력 필드 4 (비워둠)
+with c2:
+    t4 = st.text_input("종목 4", value="")
+
+# 입력된 값들만 모아서 리스트로 만들기
+input_list = [t1, t2, t3, t4]
+tickers = [t.strip() for t in input_list if t.strip() != ""]
+
+# ------------------------------------------------------------------------------
+# 이후 [Main Logic] 코드는 기존과 동일하게 tickers 리스트를 사용하므로 수정 불필요
+# ------------------------------------------------------------------------------
 
 # ==============================================================================
 # [Main Logic]
