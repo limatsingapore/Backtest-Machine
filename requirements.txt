@@ -6,3 +6,4 @@ yfinance
 plotly
 lxml
 requests
+xlsxwriter
