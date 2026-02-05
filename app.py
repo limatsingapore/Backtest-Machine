@@ -35,9 +35,7 @@ def get_stock_data(ticker, start_date, end_date):
     
     # 2. 배당 데이터 (yfinance)
     # 한국 주식은 티커 뒤에 .KS(코스피) 또는 .KQ(코스닥) 필요
-    # 단순화를 위해 우선 .KS로 시도하고 없으면 그대로 진행 (ETF 등)
     yf_ticker = f"{ticker}.KS" 
-    # 예외: 5자리 미만이나 이미 포맷이 있는 경우 등 처리 필요하나 일단 간단히 처리
     
     try:
         yf_obj = yf.Ticker(yf_ticker)
@@ -56,8 +54,6 @@ def get_stock_data(ticker, start_date, end_date):
     df['Dividend'] = 0.0
     
     # 배당금이 있는 날짜에 값 매핑
-    # 인덱스가 완전히 일치하지 않을 수 있으므로 근사값 매칭보다는 
-    # 배당락일 기준으로 데이터프레임에 조인
     common_dates = df.index.intersection(dividends.index)
     if not common_dates.empty:
         df.loc[common_dates, 'Dividend'] = dividends.loc[common_dates]
@@ -70,7 +66,6 @@ def run_simulation(df, initial_capital, monthly_payment, mode):
     """
     df = df.copy()
     df['Shares'] = 0.0       # 보유 주식 수
-    df['Cash'] = 0.0         # 잔여 현금 (주식 못 사고 남은 돈)
     df['Principal'] = 0.0    # 총 투입 원금
     df['Total_Value'] = 0.0  # 총 평가액
     
@@ -81,16 +76,12 @@ def run_simulation(df, initial_capital, monthly_payment, mode):
     if mode == "거치식":
         price = df.iloc[0]['Close']
         if price > 0:
-            shares = initial_capital / price # 소수점 주식 거래 가정 (ETF/펀드 처럼)
+            shares = initial_capital / price
             principal = initial_capital
-    
-    # 시계열 순회 (Vectorization이 빠르지만, 적립식/배당 로직의 정확성을 위해 Loop 사용)
-    # 속도 개선을 위해 리스트 컴프리헨션 사용 가능하지만 가독성 위주로 작성
     
     share_history = []
     principal_history = []
     
-    # 월초 적립 여부 판단을 위해 이전 달 저장
     prev_month = df.index[0].month
     
     for date, row in df.iterrows():
@@ -101,9 +92,10 @@ def run_simulation(df, initial_capital, monthly_payment, mode):
         if mode == "적립식":
             curr_month = date.month
             if curr_month != prev_month: # 달이 바뀌면 투자
-                added_shares = monthly_payment / price
-                shares += added_shares
-                principal += monthly_payment
+                if price > 0:
+                    added_shares = monthly_payment / price
+                    shares += added_shares
+                    principal += monthly_payment
                 prev_month = curr_month
         
         # 첫 달(적립식 시작일) 처리
@@ -112,7 +104,7 @@ def run_simulation(df, initial_capital, monthly_payment, mode):
              principal += monthly_payment
         
         # 2. 배당 재투자
-        if div > 0 and shares > 0:
+        if div > 0 and shares > 0 and price > 0:
             # 세전 배당금 전액 재투자 가정 (연금계좌/ISA)
             dividend_amount = shares * div
             reinvested_shares = dividend_amount / price
@@ -135,13 +127,13 @@ st.sidebar.header("🔧 시뮬레이션 설정")
 # 1. 투자 방식
 sim_mode = st.sidebar.radio("투자 방식", ["거치식 (Lump-sum)", "적립식 (DCA)"])
 
-# 2. 금액 입력 (천 단위 쉼표)
-if sim_mode == "거치식 (Lump-sum)":
+# 2. 금액 입력
+if sim_mode.startswith("거치식"):
     input_amt = st.sidebar.number_input("초기 거치 금액 (원)", value=10000000, step=1000000, format="%d")
     monthly_amt = 0
     st.sidebar.caption(f"💰 시작 원금: **{input_amt:,}원**")
 else:
-    input_amt = 0 # 적립식은 초기 0원 시작 가정
+    input_amt = 0
     monthly_amt = st.sidebar.number_input("월 적립 금액 (원)", value=1000000, step=100000, format="%d")
     st.sidebar.caption(f"📅 매월 **{monthly_amt:,}원** 투자")
 
@@ -151,13 +143,13 @@ end_date = st.sidebar.date_input("종료일", datetime.now())
 
 # 4. 종목 선택
 st.sidebar.divider()
-default_tickers = ["069500", "005930"] # KODEX 200, 삼성전자
+default_tickers = ["069500", "005930"]
 tickers = st.sidebar.multiselect(
     "비교할 종목 코드 (ETF 포함)", 
-    options=["069500", "005930", "379800", "360750"], # 예시 리스트
+    options=["069500", "005930", "379800", "360750"], 
     default=default_tickers
 )
-st.sidebar.caption("※ 069500: KODEX 200, 005930: 삼성전자\n(직접 입력 후 Enter하면 추가됩니다)")
+st.sidebar.caption("※ 069500: KODEX 200, 005930: 삼성전자")
 
 # ==============================================================================
 # [Main Logic]
@@ -165,17 +157,16 @@ st.sidebar.caption("※ 069500: KODEX 200, 005930: 삼성전자\n(직접 입력 
 st.title("💸 내 연금 계좌 백테스트")
 st.markdown("##### 💡 실제 배당금 데이터를 불러와 **배당 재투자(Total Return)** 성과를 비교합니다.")
 
+# [중요] if문 시작 (들여쓰기 없음)
 if st.sidebar.button("🚀 시뮬레이션 시작", type="primary"):
     if not tickers:
         st.error("종목을 하나 이상 선택해주세요.")
     else:
         with st.spinner('데이터 수집 및 배당 재투자 계산 중...'):
             data_frames = {}
-            valid_start_date = pd.to_datetime(start_date)
-            
-            # 1. 데이터 수집 및 공통 시작일 찾기
             temp_start_dates = []
             
+            # 데이터 수집
             for t in tickers:
                 df = get_stock_data(t, start_date, end_date)
                 if df is not None and not df.empty:
@@ -186,32 +177,45 @@ if st.sidebar.button("🚀 시뮬레이션 시작", type="primary"):
                 st.error("데이터를 가져올 수 없습니다. 종목 코드나 기간을 확인해주세요.")
                 st.stop()
                 
-            # 가장 늦은 상장일(시작일) 찾기 -> Normalization
+            # 공통 시작일 찾기
             common_start = max(temp_start_dates)
             st.info(f"⏳ 공통 분석 시작일: **{common_start.strftime('%Y-%m-%d')}** (선택한 종목 중 데이터가 가장 짧은 종목 기준)")
             
-            # 2. 시뮬레이션 실행 및 결과 집계
+            # 시뮬레이션 실행
             results = {}
+            mode_str = sim_mode.split()[0] # "거치식" or "적립식"
             
             for t, df in data_frames.items():
-                # 공통 시작일 이후로 자르기
                 df_trimmed = df[df.index >= common_start]
-                res_df = run_simulation(df_trimmed, input_amt, monthly_amt, sim_mode.split()[0])
+                res_df = run_simulation(df_trimmed, input_amt, monthly_amt, mode_str)
                 results[t] = res_df
 
-            # 3. 차트 시각화
+            # 차트 시각화
             fig = go.Figure()
-            
             summary_stats = []
             
             for t, res in results.items():
-                # 결과 지표 계산
                 final_val = res['Total_Value'].iloc[-1]
                 total_principal = res['Principal'].iloc[-1]
-                total_return = (final_val - total_principal) / total_principal if total_principal > 0 else 0
+                
+                # 수익률 계산 (ZeroDivisionError 방지)
+                if total_principal > 0:
+                    total_return = (final_val - total_principal) / total_principal
+                else:
+                    total_return = 0.0
+                    
                 days = (res.index[-1] - res.index[0]).days
-                cagr = (final_val / total_principal) ** (365/days) - 1 if days > 0 and total_principal > 0 else 0
-                mdd = (res['Total_Value'] / res['Total_Value'].cummax() - 1).min()
+                if days > 0 and total_principal > 0:
+                    cagr = (final_val / total_principal) ** (365/days) - 1
+                else:
+                    cagr = 0.0
+                    
+                # MDD 계산
+                cum_max = res['Total_Value'].cummax()
+                # cum_max가 0인 경우 방지
+                with np.errstate(divide='ignore', invalid='ignore'):
+                    dd = (res['Total_Value'] / cum_max) - 1
+                mdd = dd.min() if not dd.empty else 0.0
                 
                 # 차트 추가
                 fig.add_trace(go.Scatter(
@@ -232,18 +236,19 @@ if st.sidebar.button("🚀 시뮬레이션 시작", type="primary"):
                     "MDD (최대낙폭)": f"{mdd:.2%}"
                 })
             
-            # 원금 라인 추가 (적립식일 경우 의미 큼)
-            first_ticker = list(results.keys())[0]
-            fig.add_trace(go.Scatter(
-                x=results[first_ticker].index,
-                y=results[first_ticker]['Principal'],
-                name="투자 원금",
-                line=dict(color='gray', dash='dash'),
-                opacity=0.6
-            ))
+            # 원금 라인 추가
+            if results:
+                first_ticker = list(results.keys())[0]
+                fig.add_trace(go.Scatter(
+                    x=results[first_ticker].index,
+                    y=results[first_ticker]['Principal'],
+                    name="투자 원금",
+                    line=dict(color='gray', dash='dash'),
+                    opacity=0.6
+                ))
 
             fig.update_layout(
-                title=f"자산 성장 추이 ({sim_mode.split()[0]})",
+                title=f"자산 성장 추이 ({mode_str})",
                 xaxis_title="날짜",
                 yaxis_title="평가 금액 (원)",
                 hovermode="x unified",
@@ -251,7 +256,7 @@ if st.sidebar.button("🚀 시뮬레이션 시작", type="primary"):
             )
             st.plotly_chart(fig, use_container_width=True)
             
-            # 4. 결과 테이블 및 참고사항 출력
+            # 결과 테이블
             st.subheader("📊 성과 상세 분석")
             df_stats = pd.DataFrame(summary_stats).set_index("종목코드")
             st.dataframe(df_stats, use_container_width=True)
@@ -265,8 +270,6 @@ if st.sidebar.button("🚀 시뮬레이션 시작", type="primary"):
             3. **데이터 출처**: 주가는 FinanceDataReader, 배당금은 Yahoo Finance 데이터를 사용했습니다.
             """)
 
-else:
-    st.info("👈 사이드바에서 조건을 설정하고 '시뮬레이션 시작'을 눌러주세요.")
-
+# [중요] else문 위치 (if와 동일하게 들여쓰기 없음)
 else:
     st.info("👈 사이드바에서 조건을 설정하고 '시뮬레이션 시작'을 눌러주세요.")
