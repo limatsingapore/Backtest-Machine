@@ -23,13 +23,41 @@ st.markdown("""
 
 @st.cache_data(ttl=3600*24)
 def get_stock_listing():
-    """KRX 전체 종목 리스트를 가져와서 캐싱합니다 (이름 매핑용)."""
+    """KRX 전체 종목 리스트를 가져와서 캐싱합니다."""
     try:
         df = fdr.StockListing('KRX')
-        # 딕셔너리로 변환 {Symbol: Name}
+        # 컬럼명이 Symbol일 수도 있고 Code일 수도 있어서 통일
+        if 'Symbol' in df.columns:
+            df.rename(columns={'Symbol': 'Code'}, inplace=True)
         return dict(zip(df['Code'], df['Name']))
     except:
         return {}
+
+def get_stock_name(ticker, listing_dict):
+    """
+    1차: KRX 리스트에서 검색
+    2차: 없으면 YFinance로 개별 검색
+    3차: 그래도 없으면 티커 반환
+    """
+    # 1. 캐시된 리스트에서 확인
+    if ticker in listing_dict:
+        return listing_dict[ticker]
+    
+    # 2. 리스트에 없으면 yfinance로 실시간 조회 시도
+    try:
+        # 한국 주식 시도
+        ticker_yf = yf.Ticker(f"{ticker}.KS")
+        name = ticker_yf.info.get('shortName')
+        if not name:
+             ticker_yf = yf.Ticker(f"{ticker}.KQ")
+             name = ticker_yf.info.get('shortName')
+        
+        if name:
+            return name
+    except:
+        pass
+
+    return ticker # 실패 시 티커 그대로 반환
 
 @st.cache_data(ttl=3600*12)
 def get_stock_data(ticker, start_date, end_date):
@@ -41,28 +69,38 @@ def get_stock_data(ticker, start_date, end_date):
     df_price = df_price[['Close']]
     
     # 2. 배당 데이터 (yfinance)
-    yf_ticker = f"{ticker}.KS" 
-    try:
-        yf_obj = yf.Ticker(yf_ticker)
-        dividends = yf_obj.dividends
-        dividends.index = dividends.index.tz_localize(None)
-        dividends = dividends[(dividends.index >= pd.to_datetime(start_date)) & 
-                              (dividends.index <= pd.to_datetime(end_date))]
-    except:
-        dividends = pd.Series(dtype=float)
+    # ETF나 코스닥 등은 .KS 또는 .KQ가 필요함.
+    # FDR이 데이터를 가져왔다면 티커는 유효하므로 배당 조회 시도
+    dividends = pd.Series(dtype=float)
+    
+    # .KS(코스피) 우선 시도 후 .KQ(코스닥) 시도 (배당금 데이터 확보용)
+    suffixes = ['.KS', '.KQ']
+    for suffix in suffixes:
+        try:
+            yf_obj = yf.Ticker(f"{ticker}{suffix}")
+            div_temp = yf_obj.dividends
+            if not div_temp.empty:
+                div_temp.index = div_temp.index.tz_localize(None)
+                dividends = div_temp[(div_temp.index >= pd.to_datetime(start_date)) & 
+                                     (div_temp.index <= pd.to_datetime(end_date))]
+                break # 배당금을 찾았으면 루프 종료
+        except:
+            continue
 
     # 3. 병합
     df = df_price.copy()
     df['Dividend'] = 0.0
-    common_dates = df.index.intersection(dividends.index)
-    if not common_dates.empty:
-        df.loc[common_dates, 'Dividend'] = dividends.loc[common_dates]
+    
+    if not dividends.empty:
+        common_dates = df.index.intersection(dividends.index)
+        if not common_dates.empty:
+            df.loc[common_dates, 'Dividend'] = dividends.loc[common_dates]
     
     return df
 
 def run_simulation(df, initial_capital, payment_amt, mode, interval="매월"):
     """
-    시뮬레이션 엔진 (연단위 적립 로직 추가)
+    시뮬레이션 엔진
     """
     df = df.copy()
     df['Shares'] = 0.0
@@ -139,7 +177,7 @@ def run_simulation(df, initial_capital, payment_amt, mode, interval="매월"):
 # ==============================================================================
 st.sidebar.header("🔧 시뮬레이션 설정")
 
-# 종목명 매핑 데이터 로드 (캐시됨)
+# 종목명 매핑 데이터 로드
 KRX_TICKERS = get_stock_listing()
 
 # 1. 투자 방식
@@ -154,12 +192,12 @@ if sim_mode == "거치식":
     payment_amt = 0
     st.sidebar.caption(f"💰 시작 원금: **{input_amt:,}원**")
 else:
-    # 적립식일 때 주기 선택 옵션 표시
     c_opt1, c_opt2 = st.sidebar.columns(2)
     with c_opt1:
         dca_interval = st.radio("적립 주기", ["매월", "매년"], index=0)
     with c_opt2:
-        payment_amt = st.number_input("회당 적립금 (원)", value=1000000, step=100000, format="%d")
+        # [수정] step을 10000으로 변경하여 만원 단위 입력 편의성 증대
+        payment_amt = st.number_input("회당 적립금 (원)", value=1000000, step=10000, format="%d")
         
     input_amt = 0
     st.sidebar.caption(f"📅 {dca_interval} **{payment_amt:,}원** 투자")
@@ -175,7 +213,7 @@ st.sidebar.caption("종목코드 6자리를 입력하세요.")
 
 c1, c2 = st.sidebar.columns(2)
 with c1: t1 = st.text_input("종목 1", value="069500") # KODEX 200
-with c2: t2 = st.text_input("종목 2", value="360750") # TIGER 미국S&P500
+with c2: t2 = st.text_input("종목 2", value="229200") # [수정] KODEX 코스닥150 (삼성전자 -> ETF)
 with c1: t3 = st.text_input("종목 3", value="")
 with c2: t4 = st.text_input("종목 4", value="")
 
@@ -195,6 +233,7 @@ if st.sidebar.button("🚀 시뮬레이션 시작", type="primary"):
         with st.spinner('데이터 분석 및 시뮬레이션 중...'):
             data_frames = {}
             temp_start_dates = []
+            name_map = {} # {티커: 종목명} 저장용
             
             # 데이터 수집
             for t in tickers:
@@ -202,6 +241,8 @@ if st.sidebar.button("🚀 시뮬레이션 시작", type="primary"):
                 if df is not None and not df.empty:
                     data_frames[t] = df
                     temp_start_dates.append(df.index.min())
+                    # 종목명 찾기 (KRX 리스트 + YFinance Fallback)
+                    name_map[t] = get_stock_name(t, KRX_TICKERS)
             
             if not data_frames:
                 st.error("데이터를 가져올 수 없습니다. 코드를 확인해주세요.")
@@ -212,12 +253,8 @@ if st.sidebar.button("🚀 시뮬레이션 시작", type="primary"):
             st.info(f"⏳ 공통 분석 시작일: **{common_start.strftime('%Y-%m-%d')}**")
             
             results = {}
-            name_map = {} # {티커: 종목명} 저장용
             
             for t, df in data_frames.items():
-                # 종목명 찾기 (없으면 티커 그대로)
-                name_map[t] = KRX_TICKERS.get(t, t)
-                
                 df_trimmed = df[df.index >= common_start]
                 res_df = run_simulation(df_trimmed, input_amt, payment_amt, sim_mode, dca_interval)
                 results[t] = res_df
@@ -230,8 +267,9 @@ if st.sidebar.button("🚀 시뮬레이션 시작", type="primary"):
                 final_val = res['Total_Value'].iloc[-1]
                 total_principal = res['Principal'].iloc[-1]
                 
-                # 종목명 표시 (예: 삼성전자 (005930))
-                display_name = f"{name_map[t]} ({t})"
+                # [수정] 종목명 강제 적용 (없으면 티커)
+                stock_name = name_map.get(t, t)
+                display_name = f"{stock_name} ({t})"
                 
                 if total_principal > 0:
                     total_return = (final_val - total_principal) / total_principal
@@ -246,10 +284,11 @@ if st.sidebar.button("🚀 시뮬레이션 시작", type="primary"):
                     
                 mdd = (res['Total_Value'] / res['Total_Value'].cummax() - 1).min()
                 
+                # 차트 추가 (범례에 종목명 표시)
                 fig.add_trace(go.Scatter(
                     x=res.index, 
                     y=res['Total_Value'], 
-                    name=f"{name_map[t]} ({total_return:+.1%})", # 범례에 이름 표시
+                    name=f"{stock_name} ({total_return:+.1%})", 
                     mode='lines',
                     line=dict(width=2)
                 ))
@@ -286,12 +325,12 @@ if st.sidebar.button("🚀 시뮬레이션 시작", type="primary"):
             
             # --- 결과 테이블 ---
             st.subheader("📊 성과 상세 분석")
-            df_stats = pd.DataFrame(summary_stats).set_index("종목명") # 인덱스를 종목명으로
+            df_stats = pd.DataFrame(summary_stats).set_index("종목명")
             st.dataframe(df_stats, use_container_width=True)
             
             st.warning("⚠️ 참고사항")
             st.caption("""
-            1. **종목명**: KRX 상장 종목 리스트를 기반으로 자동 변환됩니다. (해외 직구 종목 등은 티커로 표시될 수 있습니다)
+            1. **종목명**: KRX 리스트 또는 Yahoo Finance 정보를 통해 자동으로 불러옵니다.
             2. **연단위 적립**: 선택 시 매년 1월(또는 데이터가 있는 첫 거래일)에 적립합니다.
             3. **소수점 매수**: 배당 재투자 및 적립 시 소수점 단위 주식까지 매수했다고 가정합니다.
             """)
