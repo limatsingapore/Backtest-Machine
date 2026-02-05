@@ -81,20 +81,13 @@ def get_stock_data(ticker, start_date, end_date):
     
     return df
 
-@st.cache_data(ttl=3600*12)
-def get_benchmark_data(start_date, end_date):
-    """KOSPI 지수 데이터 (비교용)"""
-    df = fdr.DataReader('KS11', start_date, end_date)
-    return df['Close'] if not df.empty else None
-
 def run_simulation(df, initial_capital, payment_amt, mode, interval="매월"):
     """
     [Core Logic] 시뮬레이션 엔진
-    - 중요: 변수 초기화를 함수 내부에서 명시적으로 수행
     """
     df = df.copy()
     
-    # --- 변수 초기화 (중요: 종목별 독립성 보장) ---
+    # --- 변수 초기화 ---
     shares = 0.0
     principal = 0.0
     share_history = []
@@ -107,11 +100,10 @@ def run_simulation(df, initial_capital, payment_amt, mode, interval="매월"):
             shares = initial_capital / price
             principal = initial_capital
     
-    # 이전 시점 추적 변수
     prev_month = df.index[0].month
     prev_year = df.index[0].year
     
-    # [Logic Fix] 첫 적립 실행 여부를 함수 내 로컬 변수로 관리
+    # 첫 적립 실행 플래그
     is_first_period = True 
 
     for date, row in df.iterrows():
@@ -124,10 +116,10 @@ def run_simulation(df, initial_capital, payment_amt, mode, interval="매월"):
         if mode == "적립식" and price > 0:
             should_buy = False
             
-            # (1) 시뮬레이션 시작일(데이터 첫 날) 즉시 적립
+            # (1) 시뮬레이션 시작일 즉시 적립
             if is_first_period:
                 should_buy = True
-                is_first_period = False # 플래그 끄기
+                is_first_period = False 
                 
             # (2) 주기별 적립 (월초/연초)
             else:
@@ -142,7 +134,7 @@ def run_simulation(df, initial_capital, payment_amt, mode, interval="매월"):
                 prev_month = curr_month
                 prev_year = curr_year
         
-        # 2. 배당 재투자 (세전 전액 재투자 가정)
+        # 2. 배당 재투자
         if div > 0 and shares > 0 and price > 0:
             dividend_amount = shares * div
             shares += dividend_amount / price
@@ -158,7 +150,7 @@ def run_simulation(df, initial_capital, payment_amt, mode, interval="매월"):
 
 def calculate_monthly_returns(df):
     """월별 수익률 히트맵용 데이터 생성"""
-    df_m = df['Total_Value'].resample('ME').last() # Month End
+    df_m = df['Total_Value'].resample('ME').last()
     df_ret = df_m.pct_change()
     
     pivot_df = pd.DataFrame({
@@ -181,7 +173,7 @@ sim_mode_raw = st.sidebar.radio("투자 방식", ["거치식 (Lump-sum)", "적�
 sim_mode = sim_mode_raw.split()[0]
 dca_interval = "매월"
 
-# 2. 금액 및 주기 (음수 방지 Validation)
+# 2. 금액 및 주기
 if sim_mode == "거치식":
     input_amt = st.sidebar.number_input("초기 거치 금액 (원)", value=10000000, step=1000000, min_value=1, format="%d")
     payment_amt = 0
@@ -195,20 +187,20 @@ else:
     input_amt = 0
     st.sidebar.caption(f"📅 {dca_interval} **{payment_amt:,}원** 투자")
 
-# 3. 기간 설정 (Validation)
+# 3. 기간 설정
 start_date = st.sidebar.date_input("시작일", datetime(2018, 1, 1))
 end_date = st.sidebar.date_input("종료일", datetime.now())
 
 if start_date >= end_date:
     st.sidebar.error("🚨 시작일은 종료일보다 앞서야 합니다.")
 
-# 4. 종목 선택 (티커 Validation)
+# 4. 종목 선택
 st.sidebar.divider()
 st.sidebar.subheader("📌 종목 코드 입력")
 
 c1, c2 = st.sidebar.columns(2)
-with c1: t1 = st.text_input("종목 1", value="069500", max_chars=6) # KODEX 200
-with c2: t2 = st.text_input("종목 2", value="229200", max_chars=6) # KODEX 코스닥150
+with c1: t1 = st.text_input("종목 1", value="069500", max_chars=6)
+with c2: t2 = st.text_input("종목 2", value="229200", max_chars=6)
 with c1: t3 = st.text_input("종목 3", value="", max_chars=6)
 with c2: t4 = st.text_input("종목 4", value="", max_chars=6)
 
@@ -221,8 +213,6 @@ for t in raw_tickers:
             tickers.append(t_clean)
         else:
             st.sidebar.warning(f"⚠️ '{t_clean}'은(는) 유효한 6자리 코드가 아닙니다. 제외됩니다.")
-
-show_benchmark = st.sidebar.checkbox("KOSPI 지수 비교 (Start=0%)", value=True)
 
 # ==============================================================================
 # [Main Logic]
@@ -256,14 +246,6 @@ if st.sidebar.button("🚀 시뮬레이션 시작", type="primary"):
             common_start = max(temp_start_dates)
             st.success(f"✅ 분석 기간: **{common_start.strftime('%Y-%m-%d')} ~ {end_date.strftime('%Y-%m-%d')}**")
             
-            # --- 벤치마크 준비 ---
-            bm_series = None
-            if show_benchmark:
-                bm_data = get_benchmark_data(common_start, end_date)
-                if bm_data is not None:
-                    # 시작점 0%로 정규화 (수익률 비교용)
-                    bm_series = (bm_data / bm_data.iloc[0]) - 1
-
             # --- 시뮬레이션 실행 ---
             results = {}
             summary_stats = []
@@ -304,11 +286,6 @@ if st.sidebar.button("🚀 시뮬레이션 시작", type="primary"):
                 
                 # 1. 각 종목 수익률 그래프
                 for t, res in results.items():
-                    # 비교를 위해 수익률(%)로 변환하여 그릴 수도 있지만, 여기선 평가액을 그립니다.
-                    # 다만 KOSPI와 비교하려면 수익률 축이 더 나을 수 있으나, 
-                    # 사용자 요청(자산 성장)에 따라 평가액 기준으로 하되, 
-                    # KOSPI는 '가상의 원금'이 동일하게 투입되었다고 가정하고 그립니다.
-                    
                     stock_name = name_map.get(t, t)
                     roi = (res['Total_Value'].iloc[-1] / res['Principal'].iloc[-1]) - 1 if res['Principal'].iloc[-1] > 0 else 0
                     
@@ -317,27 +294,12 @@ if st.sidebar.button("🚀 시뮬레이션 시작", type="primary"):
                         name=f"{stock_name} ({roi:+.1%})", line=dict(width=2)
                     ))
                 
-                # 2. 투자 원금 라인 (첫번째 종목 기준 - 적립식은 모두 동일하므로)
+                # 2. 투자 원금 라인
                 first_t = list(results.keys())[0]
                 fig.add_trace(go.Scatter(
                     x=results[first_t].index, y=results[first_t]['Principal'],
                     name="투자 원금", line=dict(color='gray', dash='dash'), opacity=0.6
                 ))
-                
-                # 3. KOSPI 지수 (보조축 사용 또는 원금 대비 성장으로 환산)
-                if bm_series is not None and not bm_series.empty:
-                    # KOSPI 수익률을 현재 포트폴리오 원금에 적용하여 'KOSPI에 투자했다면?'을 그림
-                    # 적립식일 경우 복잡하므로, 거치식일 때만 정확히 매칭되고 적립식일 땐 단순 지수 등락만 참조용으로 표시
-                    # 여기서는 '지수 등락률' 자체를 우측 Y축에 표시하는 방법 선택
-                    fig.add_trace(go.Scatter(
-                        x=bm_series.index, y=bm_series, 
-                        name="KOSPI 지수 (우측 축, 변동률)", 
-                        line=dict(color='rgba(255,0,0,0.3)', width=1),
-                        yaxis="y2"
-                    ))
-                    fig.update_layout(
-                        yaxis2=dict(title="KOSPI 변동률", overlaying="y", side="right", tickformat=".0%")
-                    )
 
                 fig.update_layout(
                     title=f"자산 성장 추이",
@@ -352,7 +314,7 @@ if st.sidebar.button("🚀 시뮬레이션 시작", type="primary"):
                 st.subheader("📊 성과 요약")
                 df_stats = pd.DataFrame(summary_stats)
                 
-                # 포맷팅을 위한 표시용 DF 생성
+                # 포맷팅
                 df_disp = df_stats.copy()
                 df_disp['최종 평가액'] = df_disp['최종 평가액'].apply(lambda x: f"{int(x):,}원")
                 df_disp['총 투자원금'] = df_disp['총 투자원금'].apply(lambda x: f"{int(x):,}원")
@@ -372,7 +334,7 @@ if st.sidebar.button("🚀 시뮬레이션 시작", type="primary"):
                     target_df = results[selected_ticker]
                     monthly_ret = calculate_monthly_returns(target_df)
                     
-                    # Heatmap 그리기
+                    # Heatmap
                     fig_map = px.imshow(
                         monthly_ret,
                         labels=dict(x="월", y="연도", color="수익률"),
@@ -385,7 +347,7 @@ if st.sidebar.button("🚀 시뮬레이션 시작", type="primary"):
                     fig_map.update_layout(title=f"{name_map[selected_ticker]} 월별 수익률")
                     st.plotly_chart(fig_map, use_container_width=True)
                     
-                    # 낙폭(Drawdown) 차트
+                    # MDD Chart
                     dd = (target_df['Total_Value'] / target_df['Total_Value'].cummax() - 1)
                     fig_dd = go.Figure()
                     fig_dd.add_trace(go.Scatter(
@@ -398,16 +360,13 @@ if st.sidebar.button("🚀 시뮬레이션 시작", type="primary"):
             with tab3:
                 st.subheader("📥 시뮬레이션 결과 다운로드")
                 
-                # Excel 생성을 위한 Buffer
                 output = io.BytesIO()
+                # xlsxwriter 엔진 사용 (requirements.txt에 추가 필수)
                 with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
-                    # 요약 시트
                     df_stats.to_excel(writer, index=False, sheet_name='Summary')
                     
-                    # 종목별 시트
                     for t, res in results.items():
                         sheet_name = str(t)
-                        # 엑셀 시트 이름 제한 (31자)
                         res.to_excel(writer, sheet_name=sheet_name[:31])
                         
                 processed_data = output.getvalue()
@@ -418,9 +377,6 @@ if st.sidebar.button("🚀 시뮬레이션 시작", type="primary"):
                     file_name=f'backtest_results_{datetime.now().strftime("%Y%m%d")}.xlsx',
                     mime='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
                 )
-                
-                st.divider()
-                st.caption("각 시트에 종목별 일자별 자산 변화 내역이 포함되어 있습니다.")
 
 else:
     st.info("👈 사이드바에서 조건을 설정하고 '시뮬레이션 시작'을 눌러주세요.")
