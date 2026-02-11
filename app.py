@@ -7,6 +7,7 @@ import plotly.graph_objects as go
 import plotly.express as px
 from datetime import datetime
 import io
+import xlsxwriter # 엑셀 다운로드를 위해 필요 (설치 확인)
 
 # --- [페이지 설정] ---
 st.set_page_config(page_title="Pension Stock Backtester Pro", layout="wide", page_icon="📈")
@@ -25,19 +26,38 @@ st.markdown("""
 
 @st.cache_data(ttl=3600*24)
 def get_stock_listing():
-    """KRX 전체 종목 리스트 캐싱"""
+    """KRX 전체 종목(주식+ETF) 리스트를 가져와 결합 및 캐싱"""
     try:
-        df = fdr.StockListing('KRX')
-        if 'Symbol' in df.columns:
-            df.rename(columns={'Symbol': 'Code'}, inplace=True)
-        return dict(zip(df['Code'], df['Name']))
-    except:
+        # 1. 일반 주식 (KOSPI, KOSDAQ, KONEX)
+        df_krx = fdr.StockListing('KRX')
+        if 'Symbol' in df_krx.columns:
+             df_krx.rename(columns={'Symbol': 'Code'}, inplace=True)
+        df_krx = df_krx[['Code', 'Name']]
+
+        # 2. 한국 ETF
+        df_etf = fdr.StockListing('ETF/KR')
+        if 'Symbol' in df_etf.columns:
+             df_etf.rename(columns={'Symbol': 'Code'}, inplace=True)
+        df_etf = df_etf[['Code', 'Name']]
+
+        # 3. 리스트 병합 및 중복 제거
+        df_combined = pd.concat([df_krx, df_etf], ignore_index=True)
+        # 혹시 모를 중복 코드 제거 (코드가 같으면 이름을 덮어씀)
+        df_combined.drop_duplicates(subset=['Code'], keep='first', inplace=True)
+
+        return dict(zip(df_combined['Code'], df_combined['Name']))
+    except Exception as e:
+        # 에러 발생 시 빈 딕셔너리 반환 (로그는 서버 콘솔에 찍힘)
+        print(f"Error fetching stock listing: {e}")
         return {}
 
 def get_stock_name(ticker, listing_dict):
-    """종목명 찾기 (KRX -> YFinance -> Ticker)"""
+    """종목명 찾기 (1차: 합본 리스트 -> 2차: YFinance -> 3차: Ticker)"""
+    # 1. FDR 합본 리스트에서 검색 (가장 정확함)
     if ticker in listing_dict:
         return listing_dict[ticker]
+    
+    # 2. 실패 시 YFinance 시도 (해외 종목 등)
     try:
         ticker_yf = yf.Ticker(f"{ticker}.KS")
         name = ticker_yf.info.get('shortName')
@@ -47,6 +67,8 @@ def get_stock_name(ticker, listing_dict):
         if name: return name
     except:
         pass
+        
+    # 3. 모두 실패하면 티커 반환
     return ticker
 
 @st.cache_data(ttl=3600*12)
@@ -82,12 +104,10 @@ def get_stock_data(ticker, start_date, end_date):
     return df
 
 def run_simulation(df, initial_capital, payment_amt, mode, interval="매월"):
-    """
-    [Core Logic] 시뮬레이션 엔진
-    """
+    """[Core Logic] 시뮬레이션 엔진"""
     df = df.copy()
     
-    # --- 변수 초기화 ---
+    # 변수 초기화
     shares = 0.0
     principal = 0.0
     share_history = []
@@ -102,8 +122,6 @@ def run_simulation(df, initial_capital, payment_amt, mode, interval="매월"):
     
     prev_month = df.index[0].month
     prev_year = df.index[0].year
-    
-    # 첫 적립 실행 플래그
     is_first_period = True 
 
     for date, row in df.iterrows():
@@ -115,13 +133,9 @@ def run_simulation(df, initial_capital, payment_amt, mode, interval="매월"):
         # 1. 적립식 매수 로직
         if mode == "적립식" and price > 0:
             should_buy = False
-            
-            # (1) 시뮬레이션 시작일 즉시 적립
             if is_first_period:
                 should_buy = True
                 is_first_period = False 
-                
-            # (2) 주기별 적립 (월초/연초)
             else:
                 if interval == "매월":
                     if curr_month != prev_month: should_buy = True
@@ -158,14 +172,14 @@ def calculate_monthly_returns(df):
         'Month': df_ret.index.month,
         'Return': df_ret.values
     })
-    pivot = pivot_df.pivot(index='Year', columns='Month', values='Return')
-    return pivot
+    return pivot_df.pivot(index='Year', columns='Month', values='Return')
 
 # ==============================================================================
 # [UI: Sidebar]
 # ==============================================================================
 st.sidebar.header("🔧 시뮬레이션 설정")
 
+# [중요] 주식 + ETF 합본 리스트 로드
 KRX_TICKERS = get_stock_listing()
 
 # 1. 투자 방식
@@ -197,10 +211,10 @@ if start_date >= end_date:
 # 4. 종목 선택
 st.sidebar.divider()
 st.sidebar.subheader("📌 종목 코드 입력")
-
+# 기본값 ETF로 변경
 c1, c2 = st.sidebar.columns(2)
-with c1: t1 = st.text_input("종목 1", value="069500", max_chars=6)
-with c2: t2 = st.text_input("종목 2", value="229200", max_chars=6)
+with c1: t1 = st.text_input("종목 1", value="360750", max_chars=6) # TIGER 미국S&P500
+with c2: t2 = st.text_input("종목 2", value="279530", max_chars=6) # KODEX 고배당
 with c1: t3 = st.text_input("종목 3", value="", max_chars=6)
 with c2: t4 = st.text_input("종목 4", value="", max_chars=6)
 
@@ -237,6 +251,7 @@ if st.sidebar.button("🚀 시뮬레이션 시작", type="primary"):
                 if df is not None and not df.empty:
                     data_frames[t] = df
                     temp_start_dates.append(df.index.min())
+                    # [중요] 종목명 매핑 실행
                     name_map[t] = get_stock_name(t, KRX_TICKERS)
             
             if not data_frames:
@@ -265,8 +280,8 @@ if st.sidebar.button("🚀 시뮬레이션 시작", type="primary"):
                 mdd = (res_df['Total_Value'] / res_df['Total_Value'].cummax() - 1).min()
                 
                 summary_stats.append({
-                    "티커": t,
-                    "종목명": name_map.get(t, t),
+                    "종목명": name_map.get(t, t), # 한글 종목명
+                    "티커": t, # 티커
                     "최종 평가액": final_val,
                     "총 투자원금": total_principal,
                     "수익금": final_val - total_principal,
@@ -284,14 +299,19 @@ if st.sidebar.button("🚀 시뮬레이션 시작", type="primary"):
             with tab1:
                 fig = go.Figure()
                 
-                # 1. 각 종목 수익률 그래프
+                # 1. 각 종목 자산 성장 그래프
                 for t, res in results.items():
                     stock_name = name_map.get(t, t)
-                    roi = (res['Total_Value'].iloc[-1] / res['Principal'].iloc[-1]) - 1 if res['Principal'].iloc[-1] > 0 else 0
-                    
+                    # 수익률 계산 (원금이 0 이상일 때만)
+                    if res['Principal'].iloc[-1] > 0:
+                        roi = (res['Total_Value'].iloc[-1] / res['Principal'].iloc[-1]) - 1
+                    else:
+                        roi = 0
+
                     fig.add_trace(go.Scatter(
                         x=res.index, y=res['Total_Value'], 
-                        name=f"{stock_name} ({roi:+.1%})", line=dict(width=2)
+                        name=f"{stock_name} ({roi:+.1%})", # 범례에 한글 이름 표시
+                        line=dict(width=2)
                     ))
                 
                 # 2. 투자 원금 라인
@@ -323,7 +343,8 @@ if st.sidebar.button("🚀 시뮬레이션 시작", type="primary"):
                 df_disp['CAGR'] = df_disp['CAGR'].apply(lambda x: f"{x:.2%}")
                 df_disp['MDD'] = df_disp['MDD'].apply(lambda x: f"{x:.2%}")
                 
-                st.dataframe(df_disp.set_index("종목명"), use_container_width=True)
+                # 인덱스를 숨기고 종목명, 티커 컬럼을 모두 보여줌
+                st.dataframe(df_disp, use_container_width=True, hide_index=True)
 
             # --- Tab 2: 종목별 상세 (Heatmap) ---
             with tab2:
@@ -332,6 +353,7 @@ if st.sidebar.button("🚀 시뮬레이션 시작", type="primary"):
                 
                 if selected_ticker:
                     target_df = results[selected_ticker]
+                    stock_name = name_map[selected_ticker]
                     monthly_ret = calculate_monthly_returns(target_df)
                     
                     # Heatmap
@@ -344,7 +366,7 @@ if st.sidebar.button("🚀 시뮬레이션 시작", type="primary"):
                         color_continuous_midpoint=0,
                         text_auto='.1%'
                     )
-                    fig_map.update_layout(title=f"{name_map[selected_ticker]} 월별 수익률")
+                    fig_map.update_layout(title=f"{stock_name} 월별 수익률")
                     st.plotly_chart(fig_map, use_container_width=True)
                     
                     # MDD Chart
@@ -353,7 +375,7 @@ if st.sidebar.button("🚀 시뮬레이션 시작", type="primary"):
                     fig_dd.add_trace(go.Scatter(
                         x=dd.index, y=dd, fill='tozeroy', line=dict(color='red', width=1), name='MDD'
                     ))
-                    fig_dd.update_layout(title="전고점 대비 하락률 (Drawdown)", yaxis_tickformat=".1%")
+                    fig_dd.update_layout(title=f"{stock_name} 전고점 대비 하락률 (Drawdown)", yaxis_tickformat=".1%")
                     st.plotly_chart(fig_dd, use_container_width=True)
 
             # --- Tab 3: 다운로드 ---
@@ -366,8 +388,10 @@ if st.sidebar.button("🚀 시뮬레이션 시작", type="primary"):
                     df_stats.to_excel(writer, index=False, sheet_name='Summary')
                     
                     for t, res in results.items():
-                        sheet_name = str(t)
-                        res.to_excel(writer, sheet_name=sheet_name[:31])
+                        # 시트 이름에 한글 종목명 사용 (특수문자 제거 및 길이 제한)
+                        safe_name = "".join(c for c in name_map.get(t, t) if c.isalnum() or c in (' ', '_', '-'))
+                        sheet_name = safe_name[:30] # 엑셀 시트 이름 길이 제한
+                        res.to_excel(writer, sheet_name=sheet_name)
                         
                 processed_data = output.getvalue()
                 
